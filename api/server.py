@@ -1,3 +1,5 @@
+import os
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -5,6 +7,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 load_dotenv()
+os.environ.setdefault("OPENAI_API_BASE", "")
+os.environ.setdefault("OPENAI_API_KEY", "")
 
 from .schemas import EpisodeRequest, HealthResponse, RetrieveRequest
 from .service import GMemoryApiService
