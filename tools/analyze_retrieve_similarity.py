@@ -21,14 +21,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from dotenv import load_dotenv
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from mas.memory.utils import cosine_similarity
-from mas.utils import EmbeddingFunc
+from sentence_transformers import SentenceTransformer
 
 
 DEFAULT_ARTIFACT_DIR = Path(".logs/hiagent_gmemory_api/artifacts")
@@ -43,6 +38,10 @@ TASK_BLOCK_RE = re.compile(
 TASK_GOAL_RE = re.compile(
     r"\*\*Here is your task:\s*(?P<goal>The goal is to satisfy.*?)(?=\n|$)",
     re.DOTALL,
+)
+GOAL_PREFIX_RE = re.compile(
+    r"^\s*The goal is to satisfy the following conditions:\s*",
+    re.IGNORECASE,
 )
 
 
@@ -59,7 +58,17 @@ class SimilarityRow:
     status: str
     query_task: str
     returned_task: str
+    query_embedding_text: str
+    returned_embedding_text: str
     error: str
+
+
+class EmbeddingFunc:
+    def __init__(self, model_type: str):
+        self.model = SentenceTransformer(model_type)
+
+    def embed_query(self, query: str) -> list[float]:
+        return self.model.encode(query).tolist()
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,6 +100,14 @@ def parse_args() -> argparse.Namespace:
         help="Include retrieve artifacts that returned no historical task.",
     )
     parser.add_argument(
+        "--strip-goal-prefix",
+        action="store_true",
+        help=(
+            "Remove the fixed PDDL prefix 'The goal is to satisfy the following "
+            "conditions:' before embedding query and returned tasks."
+        ),
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="Stop on the first malformed artifact instead of reporting a row with status=error.",
@@ -100,6 +117,23 @@ def parse_args() -> argparse.Namespace:
 
 def normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
+
+
+def normalize_embedding_text(text: str, strip_goal_prefix: bool) -> str:
+    text = normalize_space(text)
+    if strip_goal_prefix:
+        text = GOAL_PREFIX_RE.sub("", text)
+    return normalize_space(text)
+
+
+def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
+    left = np.array(vec1)
+    right = np.array(vec2)
+    left_norm = np.linalg.norm(left)
+    right_norm = np.linalg.norm(right)
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return float(np.dot(left, right) / (left_norm * right_norm))
 
 
 def load_artifact(path: Path) -> dict[str, Any]:
@@ -142,12 +176,19 @@ def empty_row(path: Path, data: dict[str, Any], status: str, error: str = "") ->
         status=status,
         query_task=normalize_space(data.get("derived", {}).get("query_task", "")),
         returned_task="",
+        query_embedding_text="",
+        returned_embedding_text="",
         error=error,
         **stats,
     )
 
 
-def analyze_artifact(path: Path, embedder: EmbeddingFunc, include_empty: bool) -> list[SimilarityRow]:
+def analyze_artifact(
+    path: Path,
+    embedder: EmbeddingFunc,
+    include_empty: bool,
+    strip_goal_prefix: bool,
+) -> list[SimilarityRow]:
     data = load_artifact(path)
     query_task = normalize_space(data.get("derived", {}).get("query_task", ""))
     memory_prompt = data.get("response", {}).get("memory_prompt", "")
@@ -159,11 +200,13 @@ def analyze_artifact(path: Path, embedder: EmbeddingFunc, include_empty: bool) -
     if not returned_tasks:
         return [empty_row(path, data, "empty", "no returned task parsed")] if include_empty else []
 
-    query_embedding = embedder.embed_query(query_task)
+    query_embedding_text = normalize_embedding_text(query_task, strip_goal_prefix)
+    query_embedding = embedder.embed_query(query_embedding_text)
     stats = get_stats(data)
     rows: list[SimilarityRow] = []
     for index, returned_task in returned_tasks:
-        returned_embedding = embedder.embed_query(returned_task)
+        returned_embedding_text = normalize_embedding_text(returned_task, strip_goal_prefix)
+        returned_embedding = embedder.embed_query(returned_embedding_text)
         similarity = cosine_similarity(query_embedding, returned_embedding)
         rows.append(
             SimilarityRow(
@@ -174,6 +217,8 @@ def analyze_artifact(path: Path, embedder: EmbeddingFunc, include_empty: bool) -
                 status="ok",
                 query_task=query_task,
                 returned_task=returned_task,
+                query_embedding_text=query_embedding_text,
+                returned_embedding_text=returned_embedding_text,
                 error="",
                 **stats,
             )
@@ -181,12 +226,18 @@ def analyze_artifact(path: Path, embedder: EmbeddingFunc, include_empty: bool) -
     return rows
 
 
-def collect_rows(artifact_dir: Path, embedder: EmbeddingFunc, include_empty: bool, fail_fast: bool) -> list[SimilarityRow]:
+def collect_rows(
+    artifact_dir: Path,
+    embedder: EmbeddingFunc,
+    include_empty: bool,
+    fail_fast: bool,
+    strip_goal_prefix: bool,
+) -> list[SimilarityRow]:
     rows: list[SimilarityRow] = []
     paths = sorted(artifact_dir.glob("*.retrieve.json"), key=lambda item: item.stat().st_mtime)
     for path in paths:
         try:
-            rows.extend(analyze_artifact(path, embedder, include_empty))
+            rows.extend(analyze_artifact(path, embedder, include_empty, strip_goal_prefix))
         except Exception as exc:
             if fail_fast:
                 raise
@@ -203,6 +254,8 @@ def collect_rows(artifact_dir: Path, embedder: EmbeddingFunc, include_empty: boo
                     status="error",
                     query_task="",
                     returned_task="",
+                    query_embedding_text="",
+                    returned_embedding_text="",
                     error=f"{exc.__class__.__name__}: {exc}",
                 )
             )
@@ -249,7 +302,13 @@ def main() -> None:
         or DEFAULT_EMBEDDING_MODEL
     )
     embedder = EmbeddingFunc(model)
-    rows = collect_rows(Path(args.artifact_dir), embedder, args.include_empty, args.fail_fast)
+    rows = collect_rows(
+        Path(args.artifact_dir),
+        embedder,
+        args.include_empty,
+        args.fail_fast,
+        args.strip_goal_prefix,
+    )
 
     if args.format == "json":
         print(json.dumps([asdict(row) for row in rows], indent=2, ensure_ascii=False))
