@@ -179,6 +179,11 @@ class GMemoryApiService:
         self.config.working_dir = os.getenv("GMEMORY_API_WORKING_DIR", self.config.working_dir)
         self.config.namespace = os.getenv("GMEMORY_API_NAMESPACE", self.config.namespace)
         self.config.embedding_model = os.getenv("GMEMORY_API_EMBEDDING_MODEL", self.config.embedding_model)
+        self.config.successful_topk = int(os.getenv("GMEMORY_API_SUCCESSFUL_TOPK", self.config.successful_topk))
+        self.config.failed_topk = int(os.getenv("GMEMORY_API_FAILED_TOPK", self.config.failed_topk))
+        self.config.insights_topk = int(os.getenv("GMEMORY_API_INSIGHTS_TOPK", self.config.insights_topk))
+        self.config.threshold = float(os.getenv("GMEMORY_API_THRESHOLD", self.config.threshold))
+        self.config.hop = int(os.getenv("GMEMORY_API_HOP", self.config.hop))
 
         try:
             os.makedirs(self.config.working_dir, exist_ok=True)
