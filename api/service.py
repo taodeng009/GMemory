@@ -29,11 +29,13 @@ class GMemoryApiConfig:
     insights_topk: int = 3
     threshold: float = 0.0
     hop: int = 1
+    strip_alfworld_prefix_for_retrieval: bool = False
 
 
 class GMemoryApiService:
     def __init__(self, config: Optional[GMemoryApiConfig] = None, tracer: Optional[ApiTracer] = None):
         self.config = config or GMemoryApiConfig()
+        self._load_env_config()
         self.tracer = tracer or ApiTracer()
         self._memory = None
         self._init_error = None
@@ -64,7 +66,7 @@ class GMemoryApiService:
     def retrieve(self, request: RetrieveRequest) -> RetrieveResponse:
         trace_id = self.tracer.new_trace_id()
         request_dict = request.model_dump()
-        task_main, task_description, task_main_rule = self._derive_task_fields(
+        task_main, task_description, task_main_rule, raw_task_main = self._derive_task_fields(
             request.task_type,
             request.goal,
             request.initial_observation,
@@ -72,6 +74,7 @@ class GMemoryApiService:
         )
         derived = {
             "query_task": task_main,
+            "raw_query_task": raw_task_main,
             "task_main_rule": task_main_rule,
             "task_description": task_description,
         }
@@ -120,7 +123,7 @@ class GMemoryApiService:
     def save_episode(self, request: EpisodeRequest) -> EpisodeResponse:
         trace_id = self.tracer.new_trace_id()
         request_dict = request.model_dump()
-        task_main, task_description, task_main_rule = self._derive_task_fields(
+        task_main, task_description, task_main_rule, raw_task_main = self._derive_task_fields(
             request.task_type,
             request.goal,
             request.initial_observation,
@@ -129,7 +132,10 @@ class GMemoryApiService:
         label = request.success
         mas_message = MASMessage(task_main=task_main, task_description=task_description, label=label)
         mas_message.add_extra_field("task_type", request.task_type)
-        mas_message.add_extra_field("metadata", request.metadata)
+        metadata = dict(request.metadata)
+        if raw_task_main != task_main:
+            metadata["raw_task_main"] = raw_task_main
+        mas_message.add_extra_field("metadata", metadata)
         if request.progress_rate is not None:
             mas_message.add_extra_field("progress_rate", request.progress_rate)
 
@@ -140,6 +146,7 @@ class GMemoryApiService:
 
         derived = {
             "task_main": task_main,
+            "raw_task_main": raw_task_main,
             "task_description": task_description,
             "task_main_rule": task_main_rule,
             "label": label,
@@ -175,15 +182,7 @@ class GMemoryApiService:
         from mas.memory.mas_memory.GMemory import GMemory
         from mas.utils import EmbeddingFunc
 
-        self.config.llm_model = os.getenv("GMEMORY_API_MODEL", self.config.llm_model)
-        self.config.working_dir = os.getenv("GMEMORY_API_WORKING_DIR", self.config.working_dir)
-        self.config.namespace = os.getenv("GMEMORY_API_NAMESPACE", self.config.namespace)
-        self.config.embedding_model = os.getenv("GMEMORY_API_EMBEDDING_MODEL", self.config.embedding_model)
-        self.config.successful_topk = int(os.getenv("GMEMORY_API_SUCCESSFUL_TOPK", self.config.successful_topk))
-        self.config.failed_topk = int(os.getenv("GMEMORY_API_FAILED_TOPK", self.config.failed_topk))
-        self.config.insights_topk = int(os.getenv("GMEMORY_API_INSIGHTS_TOPK", self.config.insights_topk))
-        self.config.threshold = float(os.getenv("GMEMORY_API_THRESHOLD", self.config.threshold))
-        self.config.hop = int(os.getenv("GMEMORY_API_HOP", self.config.hop))
+        self._load_env_config()
 
         try:
             os.makedirs(self.config.working_dir, exist_ok=True)
@@ -204,17 +203,23 @@ class GMemoryApiService:
         goal: str,
         initial_observation: str,
         metadata: dict,
-    ) -> tuple[str, str, str]:
+    ) -> tuple[str, str, str, str]:
         normalized_type = task_type.lower()
         metadata_env = str(metadata.get("env", "")).lower()
         if normalized_type.startswith("alfworld") or metadata_env == "alfworld":
-            task_main = f"alfworld-{goal}"
-            rule = "alfworld-prefix-goal"
+            raw_task_main = f"alfworld-{goal}"
+            if self.config.strip_alfworld_prefix_for_retrieval:
+                task_main = goal
+                rule = "alfworld-prefix-stripped"
+            else:
+                task_main = raw_task_main
+                rule = "alfworld-prefix-goal"
         else:
             task_main = goal
+            raw_task_main = task_main
             rule = "pddl-goal"
         task_description = f"Here is your initial observation: {initial_observation}\n**Here is your task: {goal}"
-        return task_main, task_description, rule
+        return task_main, task_description, rule, raw_task_main
 
     def _render_memory_prompt(self, successful: list[MASMessage], insights: list[str], task_description: str) -> str:
         return render_memory_prompt(successful, insights, task_description)
@@ -231,3 +236,25 @@ class GMemoryApiService:
 
     def _summarize_error(self, exc: Exception) -> str:
         return f"{exc.__class__.__name__}: {str(exc)[:500]}"
+
+    def _load_env_config(self) -> None:
+        load_dotenv()
+        self.config.llm_model = os.getenv("GMEMORY_API_MODEL", self.config.llm_model)
+        self.config.working_dir = os.getenv("GMEMORY_API_WORKING_DIR", self.config.working_dir)
+        self.config.namespace = os.getenv("GMEMORY_API_NAMESPACE", self.config.namespace)
+        self.config.embedding_model = os.getenv("GMEMORY_API_EMBEDDING_MODEL", self.config.embedding_model)
+        self.config.successful_topk = int(os.getenv("GMEMORY_API_SUCCESSFUL_TOPK", self.config.successful_topk))
+        self.config.failed_topk = int(os.getenv("GMEMORY_API_FAILED_TOPK", self.config.failed_topk))
+        self.config.insights_topk = int(os.getenv("GMEMORY_API_INSIGHTS_TOPK", self.config.insights_topk))
+        self.config.threshold = float(os.getenv("GMEMORY_API_THRESHOLD", self.config.threshold))
+        self.config.hop = int(os.getenv("GMEMORY_API_HOP", self.config.hop))
+        self.config.strip_alfworld_prefix_for_retrieval = self._env_bool(
+            "GMEMORY_API_STRIP_ALFWORLD_PREFIX_FOR_RETRIEVAL",
+            self.config.strip_alfworld_prefix_for_retrieval,
+        )
+
+    def _env_bool(self, name: str, default: bool) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return value.strip().lower() in {"1", "true", "yes", "on"}
