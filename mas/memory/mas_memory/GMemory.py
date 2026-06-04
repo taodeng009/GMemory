@@ -3,6 +3,7 @@ from langchain_chroma import Chroma
 from langchain.docstore.document import Document
 import os
 import copy
+import json
 import re
 from typing import Iterable
 import random
@@ -60,6 +61,7 @@ class GMemory(MASMemoryBase):
         )
 
         self.insights_cache: list[str] = []
+        self.last_retrieval_debug: dict = {}
 
         print(self._get_hyperparams_dict())
     
@@ -119,6 +121,27 @@ class GMemory(MASMemoryBase):
         threshold: float = 0.3
     ) -> tuple[list, list, list]:
 
+        def get_raw_task_main(doc: Document) -> str | None:
+            extra_fields = doc.metadata.get("extra_fields", "{}")
+            try:
+                parsed_extra_fields = json.loads(extra_fields)
+            except Exception:
+                return None
+            metadata = parsed_extra_fields.get("metadata", {})
+            if isinstance(metadata, dict):
+                return metadata.get("raw_task_main")
+            return None
+
+        def summarize_doc(doc: Document, similarity: float, passed_threshold: bool = True) -> dict:
+            return {
+                "task_main": doc.metadata.get("task_main"),
+                "raw_task_main": get_raw_task_main(doc),
+                "comparison_text": doc.page_content,
+                "similarity": float(similarity),
+                "passed_threshold": passed_threshold,
+                "label": doc.metadata.get("label"),
+            }
+
         def sort_and_filter_by_similarity(docs: list[Document], threshold: float = 0.3) -> list[tuple[Document, float]]:
             result = []
             for doc in docs:
@@ -167,6 +190,16 @@ class GMemory(MASMemoryBase):
         origin_embedding: list[float] = self.embedding_func.embed_query(query_task)
         true_tasks_doc_with_score = sort_and_filter_by_similarity(true_tasks_doc, threshold)[:successful_topk]
         false_tasks_doc_with_score = sort_and_filter_by_similarity(false_tasks_doc, threshold)[:failed_topk]
+        self.last_retrieval_debug = {
+            "query_task": query_task,
+            "threshold": threshold,
+            "successful_candidates": [
+                summarize_doc(doc, score) for doc, score in true_tasks_doc_with_score
+            ],
+            "failed_candidates": [
+                summarize_doc(doc, score) for doc, score in false_tasks_doc_with_score
+            ],
+        }
 
         true_task_messages: list[MASMessage] = []
         false_task_messages: list[MASMessage] = []
@@ -183,6 +216,9 @@ class GMemory(MASMemoryBase):
         # get insights and order by relelvance
         insights_with_score = self.insights_layer.query_insights_with_score(query_task, top_k=insight_windows)
         insights = [insight for insight, _ in insights_with_score][:insight_windows]
+        self.last_retrieval_debug["insights"] = [
+            {"text": insight, "score": float(score)} for insight, score in insights_with_score[:insight_windows]
+        ]
 
         return true_task_messages, false_task_messages, insights
 
@@ -237,6 +273,28 @@ class GMemory(MASMemoryBase):
         # directlt get insights
         top_k_insights = insights[:insight_topk]
         self.insights_cache = top_k_insights
+        debug = getattr(self, "last_retrieval_debug", {})
+        if debug:
+            debug["llm_importance_scores"] = [
+                {"task_main": task.task_main, "score": float(score)}
+                for task, score in zip(successful_task_trajectories, importance_score)
+            ]
+            selected_successful = {task.task_main for task in top_success_task_trajectories}
+            selected_failed = {task.task_main for task in top_fail_task_trajectories}
+            selected_insights = set(top_k_insights)
+            debug["selected_successful"] = [
+                item for item in debug.get("successful_candidates", [])
+                if item.get("task_main") in selected_successful
+            ]
+            debug["selected_failed"] = [
+                item for item in debug.get("failed_candidates", [])
+                if item.get("task_main") in selected_failed
+            ]
+            debug["selected_insights"] = [
+                item for item in debug.get("insights", [])
+                if item.get("text") in selected_insights
+            ]
+            self.last_retrieval_debug = debug
 
         return top_success_task_trajectories, top_fail_task_trajectories, top_k_insights
 

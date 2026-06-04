@@ -96,6 +96,9 @@ class GMemoryApiService:
                     insight_topk=self.config.insights_topk,
                     threshold=self.config.threshold,
                 )
+                retrieval_debug = getattr(self._memory, "last_retrieval_debug", None)
+                if retrieval_debug:
+                    derived["retrieval_debug"] = retrieval_debug
                 memory_prompt = self._render_memory_prompt(success, insights, task_description)
                 memory_prompt = memory_prompt[: request.max_chars]
                 stats = MemoryStats(
