@@ -36,13 +36,14 @@ TASK_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 TASK_GOAL_RE = re.compile(
-    r"\*\*Here is your task:\s*(?P<goal>The goal is to satisfy.*?)(?=\n|$)",
+    r"\*\*Here is your task:\s*(?P<goal>.*?)(?=\n|$)",
     re.DOTALL,
 )
 GOAL_PREFIX_RE = re.compile(
     r"^\s*The goal is to satisfy the following conditions:\s*",
     re.IGNORECASE,
 )
+ALFWORLD_PREFIX_RE = re.compile(r"^\s*alfworld-", re.IGNORECASE)
 
 
 @dataclass
@@ -108,6 +109,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--strip-alfworld-prefix",
+        action="store_true",
+        help=(
+            "Remove the fixed ALFWorld namespace prefix 'alfworld-' before "
+            "embedding query and returned tasks."
+        ),
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="Stop on the first malformed artifact instead of reporting a row with status=error.",
@@ -119,8 +128,14 @@ def normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def normalize_embedding_text(text: str, strip_goal_prefix: bool) -> str:
+def normalize_embedding_text(
+    text: str,
+    strip_goal_prefix: bool,
+    strip_alfworld_prefix: bool,
+) -> str:
     text = normalize_space(text)
+    if strip_alfworld_prefix:
+        text = ALFWORLD_PREFIX_RE.sub("", text)
     if strip_goal_prefix:
         text = GOAL_PREFIX_RE.sub("", text)
     return normalize_space(text)
@@ -140,14 +155,21 @@ def load_artifact(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def extract_returned_tasks(memory_prompt: str) -> list[tuple[int, str]]:
+def normalize_task_for_comparison(text: str, query_task: str) -> str:
+    text = normalize_space(text)
+    if ALFWORLD_PREFIX_RE.match(query_task) and not ALFWORLD_PREFIX_RE.match(text):
+        return f"alfworld-{text}"
+    return text
+
+
+def extract_returned_tasks(memory_prompt: str, query_task: str) -> list[tuple[int, str]]:
     tasks: list[tuple[int, str]] = []
     for match in TASK_BLOCK_RE.finditer(memory_prompt or ""):
         index = int(match.group("index"))
         description = match.group("description").strip()
         goal_match = TASK_GOAL_RE.search(description)
         task = goal_match.group("goal") if goal_match else description
-        tasks.append((index, normalize_space(task)))
+        tasks.append((index, normalize_task_for_comparison(task, query_task)))
     return tasks
 
 
@@ -188,11 +210,12 @@ def analyze_artifact(
     embedder: EmbeddingFunc,
     include_empty: bool,
     strip_goal_prefix: bool,
+    strip_alfworld_prefix: bool,
 ) -> list[SimilarityRow]:
     data = load_artifact(path)
     query_task = normalize_space(data.get("derived", {}).get("query_task", ""))
     memory_prompt = data.get("response", {}).get("memory_prompt", "")
-    returned_tasks = extract_returned_tasks(memory_prompt)
+    returned_tasks = extract_returned_tasks(memory_prompt, query_task)
 
     if not query_task:
         return [empty_row(path, data, "parse_failed", "missing derived.query_task")]
@@ -200,12 +223,20 @@ def analyze_artifact(
     if not returned_tasks:
         return [empty_row(path, data, "empty", "no returned task parsed")] if include_empty else []
 
-    query_embedding_text = normalize_embedding_text(query_task, strip_goal_prefix)
+    query_embedding_text = normalize_embedding_text(
+        query_task,
+        strip_goal_prefix,
+        strip_alfworld_prefix,
+    )
     query_embedding = embedder.embed_query(query_embedding_text)
     stats = get_stats(data)
     rows: list[SimilarityRow] = []
     for index, returned_task in returned_tasks:
-        returned_embedding_text = normalize_embedding_text(returned_task, strip_goal_prefix)
+        returned_embedding_text = normalize_embedding_text(
+            returned_task,
+            strip_goal_prefix,
+            strip_alfworld_prefix,
+        )
         returned_embedding = embedder.embed_query(returned_embedding_text)
         similarity = cosine_similarity(query_embedding, returned_embedding)
         rows.append(
@@ -215,8 +246,8 @@ def analyze_artifact(
                 returned_task_index=index,
                 similarity=similarity,
                 status="ok",
-                query_task=query_task,
-                returned_task=returned_task,
+                query_task=query_embedding_text,
+                returned_task=returned_embedding_text,
                 query_embedding_text=query_embedding_text,
                 returned_embedding_text=returned_embedding_text,
                 error="",
@@ -232,12 +263,21 @@ def collect_rows(
     include_empty: bool,
     fail_fast: bool,
     strip_goal_prefix: bool,
+    strip_alfworld_prefix: bool,
 ) -> list[SimilarityRow]:
     rows: list[SimilarityRow] = []
     paths = sorted(artifact_dir.glob("*.retrieve.json"), key=lambda item: item.stat().st_mtime)
     for path in paths:
         try:
-            rows.extend(analyze_artifact(path, embedder, include_empty, strip_goal_prefix))
+            rows.extend(
+                analyze_artifact(
+                    path,
+                    embedder,
+                    include_empty,
+                    strip_goal_prefix,
+                    strip_alfworld_prefix,
+                )
+            )
         except Exception as exc:
             if fail_fast:
                 raise
@@ -308,6 +348,7 @@ def main() -> None:
         args.include_empty,
         args.fail_fast,
         args.strip_goal_prefix,
+        args.strip_alfworld_prefix,
     )
 
     if args.format == "json":
