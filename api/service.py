@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from mas.memory.common import MASMessage
 
-from .prompt_renderer import render_memory_prompt
+from .prompt_renderer import render_key_steps_only_memory_prompt, render_memory_prompt
 from .schemas import (
     EpisodeRequest,
     EpisodeResponse,
@@ -30,6 +30,7 @@ class GMemoryApiConfig:
     threshold: float = 0.0
     hop: int = 1
     strip_alfworld_prefix_for_retrieval: bool = False
+    render_mode: str = "default"
 
 
 class GMemoryApiService:
@@ -72,11 +73,13 @@ class GMemoryApiService:
             request.initial_observation,
             request.metadata,
         )
+        render_mode = self._resolve_render_mode(request.render_mode)
         derived = {
             "query_task": task_main,
             "raw_query_task": raw_task_main,
             "task_main_rule": task_main_rule,
             "task_description": task_description,
+            "render_mode": render_mode,
         }
 
         error = None
@@ -99,7 +102,7 @@ class GMemoryApiService:
                 retrieval_debug = getattr(self._memory, "last_retrieval_debug", None)
                 if retrieval_debug:
                     derived["retrieval_debug"] = retrieval_debug
-                memory_prompt = self._render_memory_prompt(success, insights, task_description)
+                memory_prompt = self._render_memory_prompt(success, insights, task_description, render_mode)
                 memory_prompt = memory_prompt[: request.max_chars]
                 stats = MemoryStats(
                     memory_size=memory_size,
@@ -224,8 +227,23 @@ class GMemoryApiService:
         task_description = f"Here is your initial observation: {initial_observation}\n**Here is your task: {goal}"
         return task_main, task_description, rule, raw_task_main
 
-    def _render_memory_prompt(self, successful: list[MASMessage], insights: list[str], task_description: str) -> str:
+    def _render_memory_prompt(
+        self,
+        successful: list[MASMessage],
+        insights: list[str],
+        task_description: str,
+        render_mode: str,
+    ) -> str:
+        if render_mode == "key_steps_only":
+            return render_key_steps_only_memory_prompt(successful)
         return render_memory_prompt(successful, insights, task_description)
+
+    def _resolve_render_mode(self, request_render_mode: Optional[str]) -> str:
+        render_mode = request_render_mode or self.config.render_mode
+        render_mode = str(render_mode or "default").strip().lower()
+        if render_mode == "key_steps_only":
+            return render_mode
+        return "default"
 
     def _empty_stats(self) -> MemoryStats:
         return MemoryStats(memory_size=0, successful_count=0, failed_count=0, insight_count=0)
@@ -251,6 +269,7 @@ class GMemoryApiService:
         self.config.insights_topk = int(os.getenv("GMEMORY_API_INSIGHTS_TOPK", self.config.insights_topk))
         self.config.threshold = float(os.getenv("GMEMORY_API_THRESHOLD", self.config.threshold))
         self.config.hop = int(os.getenv("GMEMORY_API_HOP", self.config.hop))
+        self.config.render_mode = os.getenv("GMEMORY_API_RENDER_MODE", self.config.render_mode)
         self.config.strip_alfworld_prefix_for_retrieval = self._env_bool(
             "GMEMORY_API_STRIP_ALFWORLD_PREFIX_FOR_RETRIEVAL",
             self.config.strip_alfworld_prefix_for_retrieval,

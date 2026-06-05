@@ -38,6 +38,29 @@ TASK_CONTEXT = """
 {trajectory}
 """
 
+KEY_STEPS_ONLY_MEMORY = """## Retrieved Long-Term Memory
+BEGIN_RETRIEVED_MEMORY
+
+This is past experience from similar successful tasks.
+Use it only as a high-level strategy reference.
+The current task, current observation, and valid actions always take priority.
+Do not copy object names, receptacle names, locations, or numbers from past tasks.
+Reuse only the general procedure when it matches the current situation.
+
+### Past Successful Tasks
+
+{tasks}
+
+END_RETRIEVED_MEMORY
+"""
+
+KEY_STEPS_ONLY_TASK = """Task {idx}:
+Past task description:
+{task_description}
+
+Useful key steps:
+{key_steps}"""
+
 
 def render_memory_prompt(successful: list[MASMessage], insights: list[str], task_description: str) -> str:
     if not successful and not insights:
@@ -59,3 +82,18 @@ def render_memory_prompt(successful: list[MASMessage], insights: list[str], task
         insights=insight_text,
         task_description=task_description,
     )
+
+
+def render_key_steps_only_memory_prompt(successful: list[MASMessage]) -> str:
+    if not successful:
+        return ""
+
+    tasks = "\n\n".join(
+        KEY_STEPS_ONLY_TASK.format(
+            idx=idx + 1,
+            task_description=item.task_description or "",
+            key_steps=item.get_extra_field("key_steps") or "",
+        )
+        for idx, item in enumerate(successful)
+    )
+    return KEY_STEPS_ONLY_MEMORY.format(tasks=tasks)

@@ -15,6 +15,7 @@ class RetrieveRequest(BaseModel):
     goal: str
     initial_observation: str
     max_chars: int = Field(default=4000, gt=0)
+    render_mode: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
