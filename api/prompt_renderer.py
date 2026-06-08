@@ -1,3 +1,5 @@
+import re
+
 from mas.memory.common import MASMessage
 
 
@@ -61,6 +63,13 @@ Past task description:
 Useful key steps:
 {key_steps}"""
 
+GOAL_KEY_STEPS_ONLY_TASK = """Task {idx}:
+Past task goal:
+{task_goal}
+
+Useful key steps:
+{key_steps}"""
+
 
 def render_memory_prompt(successful: list[MASMessage], insights: list[str], task_description: str) -> str:
     if not successful and not insights:
@@ -97,3 +106,32 @@ def render_key_steps_only_memory_prompt(successful: list[MASMessage]) -> str:
         for idx, item in enumerate(successful)
     )
     return KEY_STEPS_ONLY_MEMORY.format(tasks=tasks)
+
+
+def render_goal_key_steps_only_memory_prompt(successful: list[MASMessage]) -> str:
+    if not successful:
+        return ""
+
+    tasks = "\n\n".join(
+        GOAL_KEY_STEPS_ONLY_TASK.format(
+            idx=idx + 1,
+            task_goal=_extract_task_goal(item),
+            key_steps=item.get_extra_field("key_steps") or "",
+        )
+        for idx, item in enumerate(successful)
+    )
+    return KEY_STEPS_ONLY_MEMORY.format(tasks=tasks)
+
+
+def _extract_task_goal(item: MASMessage) -> str:
+    task_main = (item.task_main or "").strip()
+    if task_main.lower().startswith("alfworld-"):
+        return task_main[len("alfworld-") :].strip()
+    if task_main:
+        return task_main
+
+    task_description = item.task_description or ""
+    match = re.search(r"\*\*Here is your task:\s*(?P<goal>.*?)(?:\n|$)", task_description, re.DOTALL)
+    if match:
+        return match.group("goal").strip()
+    return task_description.strip()
