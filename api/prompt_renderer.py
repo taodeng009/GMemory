@@ -70,6 +70,13 @@ Past task goal:
 Useful key steps:
 {key_steps}"""
 
+INSIGHT_ONLY_MEMORY = """## Key Insights from Related Tasks
+The following are insights gathered during the execution of similar tasks. You may refer to them during your task execution to improve problem-solving accuracy.
+
+{insights}
+---
+"""
+
 
 def render_memory_prompt(successful: list[MASMessage], insights: list[str], task_description: str) -> str:
     if not successful and not insights:
@@ -121,6 +128,14 @@ def render_goal_key_steps_only_memory_prompt(successful: list[MASMessage]) -> st
         for idx, item in enumerate(successful)
     )
     return KEY_STEPS_ONLY_MEMORY.format(tasks=tasks)
+
+
+def render_insight_only_memory_prompt(insights: list[str]) -> str:
+    if not insights:
+        return ""
+
+    insight_text = "\n".join(f"{idx}. {insight}" for idx, insight in enumerate(insights, 1))
+    return INSIGHT_ONLY_MEMORY.format(insights=insight_text)
 
 
 def _extract_task_goal(item: MASMessage) -> str:

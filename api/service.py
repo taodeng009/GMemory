@@ -9,6 +9,7 @@ from mas.memory.common import MASMessage
 
 from .prompt_renderer import (
     render_goal_key_steps_only_memory_prompt,
+    render_insight_only_memory_prompt,
     render_key_steps_only_memory_prompt,
     render_memory_prompt,
 )
@@ -242,12 +243,14 @@ class GMemoryApiService:
             return render_key_steps_only_memory_prompt(successful)
         if render_mode == "goal_key_steps_only":
             return render_goal_key_steps_only_memory_prompt(successful)
+        if render_mode == "insight_only":
+            return render_insight_only_memory_prompt(insights)
         return render_memory_prompt(successful, insights, task_description)
 
     def _resolve_render_mode(self, request_render_mode: Optional[str]) -> str:
         render_mode = request_render_mode or self.config.render_mode
         render_mode = str(render_mode or "default").strip().lower()
-        if render_mode in {"key_steps_only", "goal_key_steps_only"}:
+        if render_mode in {"key_steps_only", "goal_key_steps_only", "insight_only"}:
             return render_mode
         return "default"
 
