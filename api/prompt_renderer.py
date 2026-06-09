@@ -77,6 +77,9 @@ The following are insights gathered during the execution of similar tasks. You m
 ---
 """
 
+_BECAUSE_SUFFIX_RE = re.compile(r"\s*,?\s+because\b.*$", flags=re.IGNORECASE)
+_BECAUSE_WORD_RE = re.compile(r"\bbecause\b", flags=re.IGNORECASE)
+
 
 def render_memory_prompt(successful: list[MASMessage], insights: list[str], task_description: str) -> str:
     if not successful and not insights:
@@ -130,12 +133,34 @@ def render_goal_key_steps_only_memory_prompt(successful: list[MASMessage]) -> st
     return KEY_STEPS_ONLY_MEMORY.format(tasks=tasks)
 
 
-def render_insight_only_memory_prompt(insights: list[str]) -> str:
+def render_insight_only_memory_prompt(insights: list[str], insight_style: str = "original") -> str:
     if not insights:
         return ""
 
-    insight_text = "\n".join(f"{idx}. {insight}" for idx, insight in enumerate(insights, 1))
+    insight_text = "\n".join(
+        f"{idx}. {normalize_insight_text(insight, insight_style)}"
+        for idx, insight in enumerate(insights, 1)
+    )
     return INSIGHT_ONLY_MEMORY.format(insights=insight_text)
+
+
+def normalize_insight_text(insight: str, insight_style: str = "original") -> str:
+    normalized = (insight or "").strip()
+    if insight_style == "no_because":
+        return remove_because_clause(normalized)
+    return normalized
+
+
+def remove_because_clause(insight: str) -> str:
+    shortened = _BECAUSE_SUFFIX_RE.sub("", insight.strip()).strip()
+    shortened = shortened.rstrip(" ,;:")
+    if shortened and shortened[-1] not in ".!?":
+        shortened += "."
+    return shortened
+
+
+def count_because_lines(insights: list[str]) -> int:
+    return sum(1 for insight in insights if _BECAUSE_WORD_RE.search(insight or ""))
 
 
 def _extract_task_goal(item: MASMessage) -> str:

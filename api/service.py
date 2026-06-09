@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from mas.memory.common import MASMessage
 
 from .prompt_renderer import (
+    count_because_lines,
     render_goal_key_steps_only_memory_prompt,
     render_insight_only_memory_prompt,
     render_key_steps_only_memory_prompt,
@@ -36,6 +37,7 @@ class GMemoryApiConfig:
     hop: int = 1
     strip_alfworld_prefix_for_retrieval: bool = False
     render_mode: str = "default"
+    insight_style: str = "original"
 
 
 class GMemoryApiService:
@@ -85,6 +87,7 @@ class GMemoryApiService:
             "task_main_rule": task_main_rule,
             "task_description": task_description,
             "render_mode": render_mode,
+            "insight_style": self.config.insight_style,
         }
 
         error = None
@@ -108,6 +111,10 @@ class GMemoryApiService:
                 if retrieval_debug:
                     derived["retrieval_debug"] = retrieval_debug
                 memory_prompt = self._render_memory_prompt(success, insights, task_description, render_mode)
+                derived["because_line_count_before"] = count_because_lines(insights)
+                derived["because_line_count_after"] = count_because_lines(
+                    self._normalize_rendered_insights(insights, render_mode)
+                )
                 memory_prompt = memory_prompt[: request.max_chars]
                 stats = MemoryStats(
                     memory_size=memory_size,
@@ -244,8 +251,15 @@ class GMemoryApiService:
         if render_mode == "goal_key_steps_only":
             return render_goal_key_steps_only_memory_prompt(successful)
         if render_mode == "insight_only":
-            return render_insight_only_memory_prompt(insights)
+            return render_insight_only_memory_prompt(insights, self.config.insight_style)
         return render_memory_prompt(successful, insights, task_description)
+
+    def _normalize_rendered_insights(self, insights: list[str], render_mode: str) -> list[str]:
+        if render_mode != "insight_only":
+            return insights
+        from .prompt_renderer import normalize_insight_text
+
+        return [normalize_insight_text(insight, self.config.insight_style) for insight in insights]
 
     def _resolve_render_mode(self, request_render_mode: Optional[str]) -> str:
         render_mode = request_render_mode or self.config.render_mode
@@ -279,10 +293,19 @@ class GMemoryApiService:
         self.config.threshold = float(os.getenv("GMEMORY_API_THRESHOLD", self.config.threshold))
         self.config.hop = int(os.getenv("GMEMORY_API_HOP", self.config.hop))
         self.config.render_mode = os.getenv("GMEMORY_API_RENDER_MODE", self.config.render_mode)
+        self.config.insight_style = self._resolve_insight_style(
+            os.getenv("GMEMORY_API_INSIGHT_STYLE", self.config.insight_style)
+        )
         self.config.strip_alfworld_prefix_for_retrieval = self._env_bool(
             "GMEMORY_API_STRIP_ALFWORLD_PREFIX_FOR_RETRIEVAL",
             self.config.strip_alfworld_prefix_for_retrieval,
         )
+
+    def _resolve_insight_style(self, insight_style: str) -> str:
+        insight_style = str(insight_style or "original").strip().lower()
+        if insight_style in {"original", "no_because"}:
+            return insight_style
+        return "original"
 
     def _env_bool(self, name: str, default: bool) -> bool:
         value = os.getenv(name)
