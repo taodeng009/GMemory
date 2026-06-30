@@ -1,6 +1,6 @@
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 class EpisodeStep(BaseModel):
@@ -27,6 +27,48 @@ class EpisodeRequest(BaseModel):
     progress_rate: Optional[float] = None
     steps: list[EpisodeStep] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectorRequest(BaseModel):
+    goal: str
+    subgoal: None = None
+    task_contract: dict[str, Any] = Field(default_factory=dict)
+    raw_insights: list[str]
+
+    @field_validator("goal")
+    @classmethod
+    def validate_goal(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("goal must not be empty")
+        return value
+
+    @field_validator("raw_insights")
+    @classmethod
+    def validate_raw_insights(cls, value: list[str]) -> list[str]:
+        if any(not insight.strip() for insight in value):
+            raise ValueError("raw insights must not contain empty strings")
+        return value
+
+
+ProjectorDecision = Literal["KEEP", "REWRITE", "DROP"]
+ProjectorBundleStatus = Literal["HAS_CANDIDATES", "EMPTY"]
+
+
+class ProjectorItem(BaseModel):
+    raw_insight: str
+    decision: ProjectorDecision
+    projected_insight: Optional[str] = None
+    applicable_phases: list[str] = Field(default_factory=list)
+    required_evidence: list[str] = Field(default_factory=list)
+    prohibited_assumptions: list[str] = Field(default_factory=list)
+    risk_codes: list[str] = Field(default_factory=list)
+
+
+class ProjectorResponse(BaseModel):
+    bundle_status: ProjectorBundleStatus
+    items: list[ProjectorItem] = Field(default_factory=list)
+    error: Optional[str] = None
 
 
 class MemoryStats(BaseModel):

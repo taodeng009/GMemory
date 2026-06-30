@@ -10,12 +10,38 @@ load_dotenv()
 os.environ.setdefault("OPENAI_API_BASE", "")
 os.environ.setdefault("OPENAI_API_KEY", "")
 
-from .schemas import EpisodeRequest, HealthResponse, RetrieveRequest
+from .projector import ProjectorService
+from .schemas import (
+    EpisodeRequest,
+    HealthResponse,
+    ProjectorRequest,
+    ProjectorResponse,
+    RetrieveRequest,
+)
 from .service import GMemoryApiService
 
 
 app = FastAPI(title="GMemory API", version="0.1.0")
 service = GMemoryApiService()
+
+
+class _LazyProjectorLLM:
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self._client = None
+
+    def __call__(self, *args, **kwargs):
+        if self._client is None:
+            from mas.llm import GPTChat
+
+            self._client = GPTChat(model_name=self.model_name)
+        return self._client(*args, **kwargs)
+
+
+projector_service = ProjectorService(
+    llm_client=_LazyProjectorLLM(model_name=service.config.llm_model),
+    tracer=service.tracer,
+)
 
 
 @app.exception_handler(RequestValidationError)
@@ -47,6 +73,11 @@ def health():
 @app.post("/api/v1/memory/retrieve")
 def retrieve_memory(request: RetrieveRequest):
     return service.retrieve(request)
+
+
+@app.post("/api/v1/memory/project", response_model=ProjectorResponse)
+def project_insights(request: ProjectorRequest):
+    return projector_service.project(request)
 
 
 @app.post("/api/v1/memory/episodes")
