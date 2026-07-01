@@ -411,7 +411,7 @@ class GMemoryApiService:
 
     def _resolve_semantic_gate_version(self, version: str) -> str:
         version = str(version or "none").strip().lower()
-        if version in {"none", "v1", "v2", "v3", "v4"}:
+        if version in {"none", "v1", "v2", "v3", "v4", "v5"}:
             return version
         return "none"
 
