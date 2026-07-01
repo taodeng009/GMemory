@@ -87,15 +87,15 @@ def request(render_mode="insight_only"):
     )
 
 
-def build_service(memory, gate, enabled=True):
+def build_service(memory, gate, version="v2"):
     config = GMemoryApiConfig(
         render_mode="insight_only",
         insight_style="original",
-        semantic_gate_enabled=enabled,
+        semantic_gate_version=version,
     )
     tracer = FakeTracer()
     service = GMemoryApiService(config=config, tracer=tracer, semantic_gate=gate)
-    service.config.semantic_gate_enabled = enabled
+    service.config.semantic_gate_version = version
     service.config.render_mode = "insight_only"
     service.config.insight_style = "original"
     service._memory = memory
@@ -139,13 +139,22 @@ class SemanticGateRetrieveTests(unittest.TestCase):
         self.assertEqual(gate_trace["raw_insight_count"], 2)
         self.assertEqual(gate_trace["pass_count"], 1)
         self.assertEqual(gate_trace["block_count"], 1)
+        self.assertEqual(gate_trace["version"], "v2")
+        self.assertEqual(gate_trace["prompt_version"], "api-semantic-gate-v2")
+
+    def test_gate_version_resolution_is_strict(self):
+        service, _ = build_service(FakeMemory(), None, version="none")
+
+        self.assertEqual(service._resolve_semantic_gate_version("V1"), "v1")
+        self.assertEqual(service._resolve_semantic_gate_version(" v2 "), "v2")
+        self.assertEqual(service._resolve_semantic_gate_version("disabled"), "none")
 
     def test_disabled_gate_preserves_original_behavior(self):
         raw = ["One.", "Two."]
         gate = FakeGate(
             SemanticGateResult(passed_insights=[], items=[], error="should not run")
         )
-        service, tracer = build_service(FakeMemory(insights=raw), gate, enabled=False)
+        service, tracer = build_service(FakeMemory(insights=raw), gate, version="none")
 
         response = service.retrieve(request())
 
@@ -154,7 +163,7 @@ class SemanticGateRetrieveTests(unittest.TestCase):
         self.assertEqual(gate.calls, [])
         self.assertEqual(
             tracer.records[0]["derived"]["semantic_gate"],
-            {"enabled": False, "applied": False},
+            {"enabled": False, "applied": False, "version": "none"},
         )
 
     def test_gate_failure_keeps_other_memory_without_response_error(self):
@@ -227,7 +236,7 @@ class SemanticGateRetrieveTests(unittest.TestCase):
         self.assertEqual(gate.calls, [])
         self.assertEqual(
             tracer.records[0]["derived"]["semantic_gate"],
-            {"enabled": True, "applied": False},
+            {"enabled": True, "applied": False, "version": "v2"},
         )
 
 

@@ -2,7 +2,8 @@ import json
 import unittest
 
 from api.semantic_gate import (
-    SEMANTIC_GATE_SYSTEM_PROMPT,
+    SEMANTIC_GATE_V1_SYSTEM_PROMPT,
+    SEMANTIC_GATE_V2_SYSTEM_PROMPT,
     SemanticGateService,
 )
 
@@ -27,6 +28,21 @@ def model_response(items):
 
 
 class SemanticGateServiceTests(unittest.TestCase):
+    def test_selects_v1_and_v2_prompts(self):
+        v1 = SemanticGateService(FakeLLM(), version="v1")
+        v2 = SemanticGateService(FakeLLM(), version="v2")
+
+        self.assertEqual(v1.prompt_version, "api-semantic-gate-v1")
+        self.assertEqual(v1.system_prompt, SEMANTIC_GATE_V1_SYSTEM_PROMPT)
+        self.assertEqual(v2.prompt_version, "api-semantic-gate-v2")
+        self.assertEqual(v2.system_prompt, SEMANTIC_GATE_V2_SYSTEM_PROMPT)
+        self.assertIn("specific, task-relevant guidance", v2.system_prompt)
+        self.assertIn("broad multi-step checklist", v2.system_prompt)
+
+    def test_rejects_unsupported_prompt_version(self):
+        with self.assertRaises(ValueError):
+            SemanticGateService(FakeLLM(), version="v3")
+
     def test_empty_insights_skip_llm(self):
         llm = FakeLLM(response="not used")
 
@@ -69,7 +85,7 @@ class SemanticGateServiceTests(unittest.TestCase):
 
         messages = llm.calls[0]["messages"]
         self.assertEqual(messages[0].role, "system")
-        self.assertEqual(messages[0].content, SEMANTIC_GATE_SYSTEM_PROMPT)
+        self.assertEqual(messages[0].content, SEMANTIC_GATE_V2_SYSTEM_PROMPT)
         payload = json.loads(messages[1].content)
         self.assertEqual(
             payload["current_task"],

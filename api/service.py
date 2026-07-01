@@ -21,11 +21,7 @@ from .schemas import (
     RetrieveRequest,
     RetrieveResponse,
 )
-from .semantic_gate import (
-    SEMANTIC_GATE_PROMPT_VERSION,
-    SemanticGateResult,
-    SemanticGateService,
-)
+from .semantic_gate import SemanticGateResult, SemanticGateService
 from .tracing import ApiTracer
 
 
@@ -43,7 +39,7 @@ class GMemoryApiConfig:
     strip_alfworld_prefix_for_retrieval: bool = False
     render_mode: str = "default"
     insight_style: str = "original"
-    semantic_gate_enabled: bool = False
+    semantic_gate_version: str = "none"
 
 
 class GMemoryApiService:
@@ -125,7 +121,8 @@ class GMemoryApiService:
                 derived["because_line_count_before"] = count_because_lines(insights)
                 rendered_insights = insights
                 gate_error = None
-                if self.config.semantic_gate_enabled and render_mode in {"default", "insight_only"}:
+                gate_enabled = self.config.semantic_gate_version != "none"
+                if gate_enabled and render_mode in {"default", "insight_only"}:
                     gate_result = self._run_semantic_gate(
                         request.goal,
                         request.initial_observation,
@@ -139,8 +136,9 @@ class GMemoryApiService:
                     )
                 else:
                     derived["semantic_gate"] = {
-                        "enabled": self.config.semantic_gate_enabled,
+                        "enabled": gate_enabled,
                         "applied": False,
+                        "version": self.config.semantic_gate_version,
                     }
 
                 memory_prompt = self._render_memory_prompt(
@@ -329,7 +327,8 @@ class GMemoryApiService:
             from mas.llm import GPTChat
 
             self._semantic_gate = SemanticGateService(
-                llm_client=GPTChat(model_name=self.config.llm_model)
+                llm_client=GPTChat(model_name=self.config.llm_model),
+                version=self.config.semantic_gate_version,
             )
         return self._semantic_gate
 
@@ -345,10 +344,16 @@ class GMemoryApiService:
             else sum(1 for item in result.items if item.decision == "BLOCK")
         )
         llm_client = getattr(self._semantic_gate, "llm_client", None)
+        prompt_version = getattr(
+            self._semantic_gate,
+            "prompt_version",
+            f"api-semantic-gate-{self.config.semantic_gate_version}",
+        )
         return {
             "enabled": True,
             "applied": True,
-            "prompt_version": SEMANTIC_GATE_PROMPT_VERSION,
+            "version": self.config.semantic_gate_version,
+            "prompt_version": prompt_version,
             "model": getattr(llm_client, "model_name", None),
             "temperature": 0.0,
             "raw_insight_count": raw_insight_count,
@@ -387,9 +392,11 @@ class GMemoryApiService:
         self.config.insight_style = self._resolve_insight_style(
             os.getenv("GMEMORY_API_INSIGHT_STYLE", self.config.insight_style)
         )
-        self.config.semantic_gate_enabled = self._env_bool(
-            "GMEMORY_API_SEMANTIC_GATE_ENABLED",
-            self.config.semantic_gate_enabled,
+        self.config.semantic_gate_version = self._resolve_semantic_gate_version(
+            os.getenv(
+                "GMEMORY_API_SEMANTIC_GATE_VERSION",
+                self.config.semantic_gate_version,
+            )
         )
         self.config.strip_alfworld_prefix_for_retrieval = self._env_bool(
             "GMEMORY_API_STRIP_ALFWORLD_PREFIX_FOR_RETRIEVAL",
@@ -401,6 +408,12 @@ class GMemoryApiService:
         if insight_style in {"original", "no_because"}:
             return insight_style
         return "original"
+
+    def _resolve_semantic_gate_version(self, version: str) -> str:
+        version = str(version or "none").strip().lower()
+        if version in {"none", "v1", "v2"}:
+            return version
+        return "none"
 
     def _env_bool(self, name: str, default: bool) -> bool:
         value = os.getenv(name)
