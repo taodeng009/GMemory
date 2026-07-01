@@ -5,6 +5,7 @@ from api.semantic_gate import (
     SEMANTIC_GATE_V1_SYSTEM_PROMPT,
     SEMANTIC_GATE_V2_SYSTEM_PROMPT,
     SEMANTIC_GATE_V3_SYSTEM_PROMPT,
+    SEMANTIC_GATE_V4_SYSTEM_PROMPT,
     SemanticGateService,
 )
 
@@ -33,6 +34,7 @@ class SemanticGateServiceTests(unittest.TestCase):
         v1 = SemanticGateService(FakeLLM(), version="v1")
         v2 = SemanticGateService(FakeLLM(), version="v2")
         v3 = SemanticGateService(FakeLLM(), version="v3")
+        v4 = SemanticGateService(FakeLLM(), version="v4")
 
         self.assertEqual(v1.prompt_version, "api-semantic-gate-v1")
         self.assertEqual(v1.system_prompt, SEMANTIC_GATE_V1_SYSTEM_PROMPT)
@@ -44,10 +46,14 @@ class SemanticGateServiceTests(unittest.TestCase):
         self.assertEqual(v3.system_prompt, SEMANTIC_GATE_V3_SYSTEM_PROMPT)
         self.assertIn("required condition of the current goal", v3.system_prompt)
         self.assertIn("fixed historical action phrase", v3.system_prompt)
+        self.assertEqual(v4.prompt_version, "api-semantic-gate-v4")
+        self.assertEqual(v4.system_prompt, SEMANTIC_GATE_V4_SYSTEM_PROMPT)
+        self.assertIn("mixes useful guidance with unrelated historical details", v4.system_prompt)
+        self.assertIn("unless every phase is required by the current goal", v4.system_prompt)
 
     def test_rejects_unsupported_prompt_version(self):
         with self.assertRaises(ValueError):
-            SemanticGateService(FakeLLM(), version="v4")
+            SemanticGateService(FakeLLM(), version="v5")
 
     def test_empty_insights_skip_llm(self):
         llm = FakeLLM(response="not used")

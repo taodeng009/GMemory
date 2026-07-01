@@ -148,6 +148,7 @@ class SemanticGateRetrieveTests(unittest.TestCase):
         self.assertEqual(service._resolve_semantic_gate_version("V1"), "v1")
         self.assertEqual(service._resolve_semantic_gate_version(" v2 "), "v2")
         self.assertEqual(service._resolve_semantic_gate_version("V3"), "v3")
+        self.assertEqual(service._resolve_semantic_gate_version("v4"), "v4")
         self.assertEqual(service._resolve_semantic_gate_version("disabled"), "none")
 
     def test_disabled_gate_preserves_original_behavior(self):
