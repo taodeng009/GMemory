@@ -21,6 +21,11 @@ from .schemas import (
     RetrieveRequest,
     RetrieveResponse,
 )
+from .semantic_gate import (
+    SEMANTIC_GATE_PROMPT_VERSION,
+    SemanticGateResult,
+    SemanticGateService,
+)
 from .tracing import ApiTracer
 
 
@@ -38,13 +43,20 @@ class GMemoryApiConfig:
     strip_alfworld_prefix_for_retrieval: bool = False
     render_mode: str = "default"
     insight_style: str = "original"
+    semantic_gate_enabled: bool = False
 
 
 class GMemoryApiService:
-    def __init__(self, config: Optional[GMemoryApiConfig] = None, tracer: Optional[ApiTracer] = None):
+    def __init__(
+        self,
+        config: Optional[GMemoryApiConfig] = None,
+        tracer: Optional[ApiTracer] = None,
+        semantic_gate: Optional[SemanticGateService] = None,
+    ):
         self.config = config or GMemoryApiConfig()
         self._load_env_config()
         self.tracer = tracer or ApiTracer()
+        self._semantic_gate = semantic_gate
         self._memory = None
         self._init_error = None
 
@@ -110,10 +122,35 @@ class GMemoryApiService:
                 retrieval_debug = getattr(self._memory, "last_retrieval_debug", None)
                 if retrieval_debug:
                     derived["retrieval_debug"] = retrieval_debug
-                memory_prompt = self._render_memory_prompt(success, insights, task_description, render_mode)
                 derived["because_line_count_before"] = count_because_lines(insights)
+                rendered_insights = insights
+                gate_error = None
+                if self.config.semantic_gate_enabled and render_mode in {"default", "insight_only"}:
+                    gate_result = self._run_semantic_gate(
+                        request.goal,
+                        request.initial_observation,
+                        insights,
+                    )
+                    rendered_insights = gate_result.passed_insights
+                    gate_error = gate_result.error
+                    derived["semantic_gate"] = self._semantic_gate_trace(
+                        gate_result,
+                        raw_insight_count=len(insights),
+                    )
+                else:
+                    derived["semantic_gate"] = {
+                        "enabled": self.config.semantic_gate_enabled,
+                        "applied": False,
+                    }
+
+                memory_prompt = self._render_memory_prompt(
+                    success,
+                    rendered_insights,
+                    task_description,
+                    render_mode,
+                )
                 derived["because_line_count_after"] = count_because_lines(
-                    self._normalize_rendered_insights(insights, render_mode)
+                    self._normalize_rendered_insights(rendered_insights, render_mode)
                 )
                 memory_prompt = memory_prompt[: request.max_chars]
                 stats = MemoryStats(
@@ -123,7 +160,11 @@ class GMemoryApiService:
                     insight_count=len(insights),
                 )
                 if not memory_prompt:
-                    error = "no retrieval result"
+                    error = (
+                        f"semantic gate failed: {gate_error}"
+                        if gate_error
+                        else "no retrieval result"
+                    )
         except Exception as exc:
             error = self._summarize_error(exc)
             stats = self._safe_stats()
@@ -268,6 +309,56 @@ class GMemoryApiService:
             return render_mode
         return "default"
 
+    def _run_semantic_gate(
+        self,
+        goal: str,
+        initial_observation: str,
+        insights: list[str],
+    ) -> SemanticGateResult:
+        try:
+            return self._get_semantic_gate().filter(goal, initial_observation, insights)
+        except Exception as exc:
+            return SemanticGateResult(
+                passed_insights=[],
+                items=[],
+                error=self._summarize_error(exc),
+            )
+
+    def _get_semantic_gate(self) -> SemanticGateService:
+        if self._semantic_gate is None:
+            from mas.llm import GPTChat
+
+            self._semantic_gate = SemanticGateService(
+                llm_client=GPTChat(model_name=self.config.llm_model)
+            )
+        return self._semantic_gate
+
+    def _semantic_gate_trace(
+        self,
+        result: SemanticGateResult,
+        raw_insight_count: int,
+    ) -> dict:
+        pass_count = sum(1 for item in result.items if item.decision == "PASS")
+        block_count = (
+            raw_insight_count - pass_count
+            if result.error
+            else sum(1 for item in result.items if item.decision == "BLOCK")
+        )
+        llm_client = getattr(self._semantic_gate, "llm_client", None)
+        return {
+            "enabled": True,
+            "applied": True,
+            "prompt_version": SEMANTIC_GATE_PROMPT_VERSION,
+            "model": getattr(llm_client, "model_name", None),
+            "temperature": 0.0,
+            "raw_insight_count": raw_insight_count,
+            "pass_count": pass_count,
+            "block_count": block_count,
+            "items": [item.model_dump() for item in result.items],
+            "raw_model_output": result.raw_model_output,
+            "error": result.error,
+        }
+
     def _empty_stats(self) -> MemoryStats:
         return MemoryStats(memory_size=0, successful_count=0, failed_count=0, insight_count=0)
 
@@ -295,6 +386,10 @@ class GMemoryApiService:
         self.config.render_mode = os.getenv("GMEMORY_API_RENDER_MODE", self.config.render_mode)
         self.config.insight_style = self._resolve_insight_style(
             os.getenv("GMEMORY_API_INSIGHT_STYLE", self.config.insight_style)
+        )
+        self.config.semantic_gate_enabled = self._env_bool(
+            "GMEMORY_API_SEMANTIC_GATE_ENABLED",
+            self.config.semantic_gate_enabled,
         )
         self.config.strip_alfworld_prefix_for_retrieval = self._env_bool(
             "GMEMORY_API_STRIP_ALFWORLD_PREFIX_FOR_RETRIEVAL",
