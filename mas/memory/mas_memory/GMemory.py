@@ -45,6 +45,9 @@ class GMemory(MASMemoryBase):
         self._start_insights_threshold: int = self.global_config.get('start_insights_threshold', 5)
         self._rounds_per_insights: int = self.global_config.get('rounds_per_insights', 5) 
         self._insights_point_num: int = self.global_config.get('insights_point_num', 5)
+        self._merge_enabled: bool = self.global_config.get('merge_enabled', True)
+        merge_steps = self.global_config.get('merge_steps', 20)
+        self._merge_steps: int = merge_steps if isinstance(merge_steps, int) and merge_steps > 0 else 20
 
         self.task_layer = TaskLayer(
             working_dir=self.persist_dir,
@@ -71,6 +74,8 @@ class GMemory(MASMemoryBase):
             'start_insights_threshold': self._start_insights_threshold,
             'rounds_per_insights': self._rounds_per_insights,
             'insights_point_num': self._insights_point_num,
+            'merge_enabled': self._merge_enabled,
+            'merge_steps': self._merge_steps,
             'working_dir': self.persist_dir
         }
 
@@ -107,7 +112,7 @@ class GMemory(MASMemoryBase):
         # finetune and merge insights
         if self.memory_size >= self._start_insights_threshold and self.memory_size % self._rounds_per_insights == 0:
             self.insights_layer.finetune_insights(self._insights_point_num)
-        if self.memory_size % 20 == 0: 
+        if self._merge_enabled and self.memory_size > 0 and self.memory_size % self._merge_steps == 0:
             self.insights_layer.merge_insights() 
 
         self._index_done()

@@ -36,6 +36,8 @@ class GMemoryApiConfig:
     insights_topk: int = 3
     threshold: float = 0.0
     hop: int = 1
+    merge_enabled: bool = True
+    merge_steps: int = 20
     strip_alfworld_prefix_for_retrieval: bool = False
     render_mode: str = "default"
     insight_style: str = "original"
@@ -245,7 +247,12 @@ class GMemoryApiService:
             os.makedirs(self.config.working_dir, exist_ok=True)
             self._memory = GMemory(
                 namespace=self.config.namespace,
-                global_config={"working_dir": self.config.working_dir, "hop": self.config.hop},
+                global_config={
+                    "working_dir": self.config.working_dir,
+                    "hop": self.config.hop,
+                    "merge_enabled": self.config.merge_enabled,
+                    "merge_steps": self.config.merge_steps,
+                },
                 llm_model=GPTChat(model_name=self.config.llm_model),
                 embedding_func=EmbeddingFunc(self.config.embedding_model),
             )
@@ -388,6 +395,12 @@ class GMemoryApiService:
         self.config.insights_topk = int(os.getenv("GMEMORY_API_INSIGHTS_TOPK", self.config.insights_topk))
         self.config.threshold = float(os.getenv("GMEMORY_API_THRESHOLD", self.config.threshold))
         self.config.hop = int(os.getenv("GMEMORY_API_HOP", self.config.hop))
+        self.config.merge_enabled = self._resolve_merge_enabled(
+            os.getenv("GMEMORY_API_MERGE", "enabled" if self.config.merge_enabled else "disabled")
+        )
+        self.config.merge_steps = self._env_positive_int(
+            "GMEMORY_API_MERGE_STEPS", self.config.merge_steps
+        )
         self.config.render_mode = os.getenv("GMEMORY_API_RENDER_MODE", self.config.render_mode)
         self.config.insight_style = self._resolve_insight_style(
             os.getenv("GMEMORY_API_INSIGHT_STYLE", self.config.insight_style)
@@ -414,6 +427,22 @@ class GMemoryApiService:
         if version in {"none", "v1", "v2", "v3", "v4", "v5"}:
             return version
         return "none"
+
+    def _resolve_merge_enabled(self, value: str) -> bool:
+        value = str(value or "enabled").strip().lower()
+        if value == "disabled":
+            return False
+        return True
+
+    def _env_positive_int(self, name: str, default: int) -> int:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
 
     def _env_bool(self, name: str, default: bool) -> bool:
         value = os.getenv(name)
