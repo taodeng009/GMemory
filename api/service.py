@@ -38,6 +38,9 @@ class GMemoryApiConfig:
     hop: int = 1
     merge_enabled: bool = True
     merge_steps: int = 20
+    merge_strategy: str = "original"
+    atomic_merge_ratio: float = 0.33
+    atomic_merge_max_words: int = 30
     strip_alfworld_prefix_for_retrieval: bool = False
     render_mode: str = "default"
     insight_style: str = "original"
@@ -252,6 +255,9 @@ class GMemoryApiService:
                     "hop": self.config.hop,
                     "merge_enabled": self.config.merge_enabled,
                     "merge_steps": self.config.merge_steps,
+                    "merge_strategy": self.config.merge_strategy,
+                    "atomic_merge_ratio": self.config.atomic_merge_ratio,
+                    "atomic_merge_max_words": self.config.atomic_merge_max_words,
                 },
                 llm_model=GPTChat(model_name=self.config.llm_model),
                 embedding_func=EmbeddingFunc(self.config.embedding_model),
@@ -401,6 +407,15 @@ class GMemoryApiService:
         self.config.merge_steps = self._env_positive_int(
             "GMEMORY_API_MERGE_STEPS", self.config.merge_steps
         )
+        self.config.merge_strategy = self._resolve_merge_strategy(
+            os.getenv("GMEMORY_API_MERGE_STRATEGY", self.config.merge_strategy)
+        )
+        self.config.atomic_merge_ratio = self._env_ratio(
+            "GMEMORY_API_ATOMIC_MERGE_RATIO", self.config.atomic_merge_ratio
+        )
+        self.config.atomic_merge_max_words = self._env_positive_int(
+            "GMEMORY_API_ATOMIC_MERGE_MAX_WORDS", self.config.atomic_merge_max_words
+        )
         self.config.render_mode = os.getenv("GMEMORY_API_RENDER_MODE", self.config.render_mode)
         self.config.insight_style = self._resolve_insight_style(
             os.getenv("GMEMORY_API_INSIGHT_STYLE", self.config.insight_style)
@@ -433,6 +448,22 @@ class GMemoryApiService:
         if value == "disabled":
             return False
         return True
+
+    def _resolve_merge_strategy(self, value: str) -> str:
+        value = str(value or "original").strip().lower()
+        if value in {"original", "atomic_v1"}:
+            return value
+        return "original"
+
+    def _env_ratio(self, name: str, default: float) -> float:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if 0 < parsed <= 1 else default
 
     def _env_positive_int(self, name: str, default: int) -> int:
         value = os.getenv(name)

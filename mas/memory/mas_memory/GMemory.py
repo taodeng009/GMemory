@@ -14,6 +14,7 @@ from finch import FINCH
 import pickle
 import networkx as nx
 import logging
+import math
 
 from .memory_base import MASMemoryBase
 from ..common import MASMessage, StateChain
@@ -48,6 +49,12 @@ class GMemory(MASMemoryBase):
         self._merge_enabled: bool = self.global_config.get('merge_enabled', True)
         merge_steps = self.global_config.get('merge_steps', 20)
         self._merge_steps: int = merge_steps if isinstance(merge_steps, int) and merge_steps > 0 else 20
+        merge_strategy = self.global_config.get('merge_strategy', 'original')
+        self._merge_strategy: str = merge_strategy if merge_strategy in {'original', 'atomic_v1'} else 'original'
+        atomic_merge_ratio = self.global_config.get('atomic_merge_ratio', 0.33)
+        self._atomic_merge_ratio: float = atomic_merge_ratio if isinstance(atomic_merge_ratio, (int, float)) and 0 < atomic_merge_ratio <= 1 else 0.33
+        atomic_merge_max_words = self.global_config.get('atomic_merge_max_words', 30)
+        self._atomic_merge_max_words: int = atomic_merge_max_words if isinstance(atomic_merge_max_words, int) and atomic_merge_max_words > 0 else 30
 
         self.task_layer = TaskLayer(
             working_dir=self.persist_dir,
@@ -60,7 +67,10 @@ class GMemory(MASMemoryBase):
             namespace='insights', 
             llm_model=self.llm_model, 
             task_storage=self.main_memory,
-            task_layer=self.task_layer
+            task_layer=self.task_layer,
+            merge_strategy=self._merge_strategy,
+            atomic_merge_ratio=self._atomic_merge_ratio,
+            atomic_merge_max_words=self._atomic_merge_max_words
         )
 
         self.insights_cache: list[str] = []
@@ -76,6 +86,9 @@ class GMemory(MASMemoryBase):
             'insights_point_num': self._insights_point_num,
             'merge_enabled': self._merge_enabled,
             'merge_steps': self._merge_steps,
+            'merge_strategy': self._merge_strategy,
+            'atomic_merge_ratio': self._atomic_merge_ratio,
+            'atomic_merge_max_words': self._atomic_merge_max_words,
             'working_dir': self.persist_dir
         }
 
@@ -535,6 +548,9 @@ class InsightsManager:
     llm_model: LLMCallable
     task_storage: Chroma
     task_layer: TaskLayer
+    merge_strategy: str = 'original'
+    atomic_merge_ratio: float = 0.33
+    atomic_merge_max_words: int = 30
     def __post_init__(self):
         self.persist_file: str = os.path.join(self.working_dir,f'{self.namespace}.json')
         self.insights_memory: list[dict] = load_json(self.persist_file) or []
@@ -585,7 +601,10 @@ class InsightsManager:
         for task_type, related_task_mains in label_tasks.items():
             related_ids, related_insights = self._find_related_insights(task_mains=related_task_mains)
             related_rules: list[str] = [insight['rule'] for insight in related_insights]
-            merged_rules: list[str] = self._merge_rules(related_rules)
+            if self.merge_strategy == 'atomic_v1':
+                merged_rules: list[str] = self._merge_rules_atomic_v1(related_rules)
+            else:
+                merged_rules = self._merge_rules(related_rules)
             merged_label_rules[task_type] = merged_rules
 
             self.logger.info('------- Merge Insights -------')
@@ -632,6 +651,86 @@ class InsightsManager:
                         Message('user', user_prompt)]
             raw_merged_rules = self.llm_model(messages)
             merged_rules.extend(parse_numbered_list(raw_merged_rules))
+
+        return merged_rules
+
+    def _merge_rules_atomic_v1(self, rules: list[str]) -> list[str]:
+        def parse_numbered_list(text: str) -> list[str]:
+            pattern = r'\d+\.\s+(.*?)(?=\n\d+\.|\Z)'
+            items = re.findall(pattern, text.strip(), flags=re.DOTALL)
+            return [item.strip() for item in items if item.strip()]
+
+        def validate(items: list[str], limited_number: int) -> list[str]:
+            errors: list[str] = []
+            if not items:
+                errors.append('The output did not contain any numbered insights.')
+            if len(items) > limited_number:
+                errors.append(
+                    f'The output contained {len(items)} insights, exceeding the limit of {limited_number}.'
+                )
+            for index, item in enumerate(items, 1):
+                word_count = len(re.findall(r"\b[A-Za-z]+(?:[-'][A-Za-z]+)*\b", item))
+                if word_count > self.atomic_merge_max_words:
+                    errors.append(
+                        f'Insight {index} contained {word_count} English words, exceeding the limit '
+                        f'of {self.atomic_merge_max_words}.'
+                    )
+            return errors
+
+        merged_rules: list[str] = []
+        batch_size = 10
+
+        for i in range(0, len(rules), batch_size):
+            batch = rules[i:i + batch_size]
+            limited_number = max(1, math.ceil(len(batch) * self.atomic_merge_ratio))
+            system_prompt = GMemoryPrompts.atomic_merge_rules_system_prompt.format(
+                max_words=self.atomic_merge_max_words
+            )
+            user_prompt = GMemoryPrompts.atomic_merge_rules_user_prompt.format(
+                current_rules='\n'.join(batch),
+                limited_number=limited_number,
+                max_words=self.atomic_merge_max_words
+            )
+            messages = [Message('system', system_prompt), Message('user', user_prompt)]
+
+            raw_merged_rules = self.llm_model(messages)
+            parsed_rules = parse_numbered_list(raw_merged_rules)
+            errors = validate(parsed_rules, limited_number)
+            retried = False
+
+            if errors:
+                retried = True
+                retry_prompt = (
+                    user_prompt
+                    + '\n\n## Validation feedback from the previous output\n'
+                    + '\n'.join(f'- {error}' for error in errors)
+                    + '\n\nRewrite the output once and satisfy every stated limit. Output only the numbered list.'
+                )
+                retry_messages = [Message('system', system_prompt), Message('user', retry_prompt)]
+                raw_merged_rules = self.llm_model(retry_messages)
+                parsed_rules = parse_numbered_list(raw_merged_rules)
+                errors = validate(parsed_rules, limited_number)
+
+            fallback = bool(errors)
+            batch_result = batch if fallback else parsed_rules
+            merged_rules.extend(batch_result)
+
+            self.logger.info('------- Atomic Merge Batch -------')
+            self.logger.info(f'Merge strategy: {self.merge_strategy}')
+            self.logger.info(f'Input count: {len(batch)}')
+            self.logger.info(f'Output count: {len(batch_result)}')
+            self.logger.info(f'Compression ratio: {len(batch_result) / len(batch):.3f}')
+            self.logger.info(
+                'Output English word counts: '
+                + str([
+                    len(re.findall(r"\b[A-Za-z]+(?:[-'][A-Za-z]+)*\b", item))
+                    for item in batch_result
+                ])
+            )
+            self.logger.info(f'Retried: {retried}')
+            self.logger.info(f'Fallback to source rules: {fallback}')
+            if errors:
+                self.logger.info('Validation errors: ' + ' | '.join(errors))
 
         return merged_rules
 

@@ -420,6 +420,47 @@ As the summarizing agent, remove redundancies, combine similar ideas, and ensure
 Your output:
 """
 
+atomic_merge_rules_system_prompt = """
+You are an agent skilled at summarizing and distilling insights. You are given a list of insights that were previously extracted from similar tasks. These insights may contain redundancy or overlap.
+
+Your job is to **merge and consolidate genuinely similar insights**, and output a refined version that is **clear, actionable, concise, and atomic**.
+
+NOTE:
+- All merged insights **must be based strictly on the given inputs**. You are **not allowed to make up** or infer any new information.
+- The output should be easy to read and follow.
+- Each output insight should contain one main recommendation under one applicability condition.
+- Merge insights only when their triggering conditions, recommended strategies, execution phases, preconditions, and failure modes are compatible.
+- Preserve important conditions, exceptions, applicability boundaries, and causal relationships.
+- Do not merge insights that apply to different execution phases.
+- Do not merge insights that depend on different preconditions.
+- Do not merge insights that address different failure modes.
+- Do not combine multiple sequential actions into a checklist or an end-to-end procedure.
+- When uncertain whether insights should be merged, keep them separate.
+- Each insight must contain no more than {max_words} English words.
+
+📑 Output Format:
+- Start your response directly with the numbered list, no preamble or explanations.
+- Each insight should be a short sentence.
+- Use the following format exactly:
+1. Insight 1
+2. Insight 2
+3. Insight 3
+...
+"""
+
+atomic_merge_rules_user_prompt = """
+## Here are the current insights that need to be merged:
+{current_rules}
+
+## Please consolidate and rewrite them into **no more than {limited_number} atomic insights**.
+
+Each output insight must contain no more than {max_words} English words.
+
+Do not force unrelated insights together to reach the output limit.
+
+Your output:
+"""
+
 # annalyze patterns
 analyze_mas_pattern_system_prompt = """You are an expert at identifying improvements in multi-agent system (MAS) outputs.
 Given the initial outputs from several agents and the final output produced by the MAS, your task is to determine whether the MAS output shows any **improvement** over the initial agent outputs.
@@ -509,6 +550,8 @@ class GMemoryPrompt:
     detect_mistakes_user_prompt = detect_mistakes_user_prompt
     merge_rules_system_prompt = merge_rules_system_prompt
     merge_rules_user_prompt = merge_rules_user_prompt
+    atomic_merge_rules_system_prompt = atomic_merge_rules_system_prompt
+    atomic_merge_rules_user_prompt = atomic_merge_rules_user_prompt
     analyze_mas_pattern_system_prompt=analyze_mas_pattern_system_prompt
     analyze_mas_pattern_user_prompt=analyze_mas_pattern_user_prompt
     project_insights_system_prompt=project_insights_system_prompt
